@@ -46,13 +46,35 @@ const CAM_C=700,CAM_NEAR=480,CAM_Q=700;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const dist=(a,b,c,d)=>Math.hypot(a-c,b-d);
 
-// 3D 投影:世界座標(x,y,z) -> 畫面
 function pr(x,y,z=0){
   const s=CAM_C/(H+CAM_C-y);
   return {x:250+(x-250)*s*0.94,y:CAM_NEAR-(1-s)*CAM_Q-z*s,s};
 }
 
-const P={x:250,y:340,vx:0,vy:0,fx:0,fy:-1,z:0,hand:1,state:'free',st:0,stamina:1,cross:0,D:null,mode:'jump',pending:null,fade:false,fakeCd:0,imm:0};
+// ---------- 動作資料表 ----------
+// w:綠區加減(跳投)或寬度(上籃/灌籃) cf:被防守影響程度 pm:命中率倍率 bk:被蓋火鍋倍率
+const MV={
+  jump:{name:'投籃',w:0,cf:.55,pm:1,bk:1,rel:.25,total:.6,amp:22,disp:0},
+  fade:{name:'後仰',w:-.03,cf:.3,pm:.92,bk:.4,rel:.28,total:.65,amp:26,disp:40},
+  step:{name:'後撤步',w:-.03,cf:.25,pm:.94,bk:.3,rel:.3,total:.65,amp:24,disp:44},
+  side:{name:'側移跳投',w:-.015,cf:.4,pm:.96,bk:.6,rel:.27,total:.62,amp:22,disp:50},
+  turn:{name:'轉身投籃',w:-.04,cf:.2,pm:.9,bk:.4,rel:.42,total:.75,amp:24,disp:0,spin:true},
+  layup:{name:'上籃',w:.2,cf:.55,pm:1,bk:1,rel:.3,total:.7,amp:34,appr:.45,zoff:56,sdur:.5,peak:16},
+  reverse:{name:'反手上籃',w:.2,cf:.45,pm:1,bk:.6,rel:.36,total:.75,amp:34,appr:.5,zoff:56,sdur:.5,peak:22},
+  euro:{name:'歐洲步',w:.18,cf:.3,pm:.97,bk:.5,rel:.46,total:.78,amp:32,zoff:56,sdur:.5,peak:16},
+  float:{name:'拋投',w:.16,cf:.3,pm:.92,bk:.2,rel:.3,total:.7,amp:30,appr:.3,zoff:62,sdur:.8,peak:55},
+  dunk1:{name:'單手灌籃',w:.24,cf:.25,pm:1,bk:0,rel:.7,total:.95,amp:55,shake:.4},
+  dunk2:{name:'雙手灌籃',w:.22,cf:.25,pm:1,bk:0,rel:.7,total:.95,amp:58,shake:.5},
+  wind:{name:'風車灌籃',w:.18,cf:.25,pm:.95,bk:0,rel:.78,total:1.02,amp:62,shake:.6},
+  spin:{name:'360灌籃',w:.15,cf:.25,pm:.9,bk:0,rel:.78,total:1.02,amp:62,shake:.7,spin:true}
+};
+const HINT={
+  jump:'朝籃框=轉身 橫向=側移 斜後=後撤步 遠離=後仰',
+  layup:'朝籃框=上籃 斜向=反手 橫向=歐洲步 遠離=拋投',
+  dunk:'不推=單手 朝籃框=雙手 橫向=風車 遠離=360'
+};
+
+const P={x:250,y:340,vx:0,vy:0,fx:0,fy:-1,z:0,hand:1,state:'free',st:0,stamina:1,cross:0,D:null,mode:'jump',move:'jump',stk:{x:0,y:0,m:0},pending:null,fakeCd:0,imm:0};
 const B={x:250,y:340,z:0,vx:0,vy:0,vz:0,mode:'held',lock:0};
 const Df={x:250,y:200,vx:0,vy:0,z:0,state:'guard',st:0,stun:0,steal:0,cool:0,react:false,bite:false,rt:0.4};
 let defOn=true;
@@ -65,7 +87,7 @@ const input={jx:0,jy:0,sprint:false,keys:{}};
 function say(t,c='#fff',x=P.x,y=P.y,z=(P.z||0)+75){texts.push({t,c,x,y,z,life:1.1})}
 
 function reset(){
-  Object.assign(P,{x:250,y:340,vx:0,vy:0,z:0,state:'free',D:null,stamina:1,pending:null,fade:false,fakeCd:0,imm:0});
+  Object.assign(P,{x:250,y:340,vx:0,vy:0,z:0,state:'free',D:null,stamina:1,pending:null,move:'jump',fakeCd:0,imm:0});
   Object.assign(B,{mode:'held',z:0,vx:0,vy:0,vz:0,lock:0});
   Object.assign(Df,{x:250,y:200,vx:0,vy:0,z:0,state:'guard',st:0,stun:0,steal:0,cool:0,react:false,bite:false});
   shot=null;pass=null;meter=0;
@@ -122,7 +144,20 @@ addEventListener('keyup',e=>{
 // ---------- 動作 ----------
 const MODE_NAME={jump:'投籃',layup:'上籃',dunk:'灌籃'};
 function modeByDist(d){return d<=85?'dunk':(d<=130?'layup':'jump')}
-function modeLabel(){return (P.mode==='jump'&&P.fade)?'後仰':MODE_NAME[P.mode]}
+function modeLabel(){return MV[P.move]?MV[P.move].name:MODE_NAME[P.mode]}
+function defaultMove(mode){return mode==='jump'?'jump':(mode==='layup'?'layup':'dunk1')}
+
+// 依搖桿方向決定動作
+function pickMove(mode,ax,ay,m){
+  if(m<0.5)return defaultMove(mode);
+  const dd=Math.hypot(P.x-RIM.x,P.y-RIM.y)||1;
+  const ux=(P.x-RIM.x)/dd,uy=(P.y-RIM.y)/dd;
+  const th=Math.acos(clamp((ax*ux+ay*uy)/m,-1,1))*180/Math.PI;
+  const ph=180-th;
+  if(mode==='jump')return th<35?'fade':(th<80?'step':(th<130?'side':'turn'));
+  if(mode==='layup')return ph<35?'layup':(ph<80?'reverse':(ph<125?'euro':'float'));
+  return ph<40?'dunk2':(ph<120?'wind':'spin');
+}
 
 function crossover(){
   if(P.state==='free'&&B.mode==='held'){P.hand*=-1;P.cross=0.3;P.imm=0.6;say('換手運球','#8ff')}
@@ -151,17 +186,15 @@ function startAim(){
   if(P.state==='fake'&&B.mode==='held'){P.state='free';P.z=0}
   if(P.state!=='free'||B.mode!=='held')return;
   P.mode=modeByDist(dist(P.x,P.y,RIM.x,RIM.y));
-  P.fade=false;
+  P.move=defaultMove(P.mode);
   Df.rt=0.25+Math.random()*0.35;
   P.state='aim';meter=0;
 }
 function greenInfo(){
-  const d=dist(P.x,P.y,RIM.x,RIM.y);
-  if(P.mode==='dunk')return {c:0.82,w:0.24,d};
-  if(P.mode==='layup')return {c:0.82,w:0.20,d};
-  return {c:0.82,w:clamp(0.22-d*0.0006-(P.fade?0.03:0),0.04,0.2),d};
+  const d=dist(P.x,P.y,RIM.x,RIM.y),mv=MV[P.move];
+  if(P.mode==='jump')return {c:0.82,w:clamp(0.22-d*0.0006+mv.w,0.04,0.2),d};
+  return {c:0.82,w:mv.w,d};
 }
-// 防守干擾程度 0~1
 function contest(){
   if(!defOn)return 0;
   const vx=Df.x-P.x,vy=Df.y-P.y,d=Math.hypot(vx,vy);
@@ -176,13 +209,12 @@ function contest(){
 function releaseShot(){
   if(P.state!=='aim')return;
   if(meter<0.12){P.state='free';pumpFake();return}
-  const g=greenInfo(),err=meter-g.c,ae=Math.abs(err),mode=P.mode;
-  const fade=mode==='jump'&&P.fade;
-  const perfect=ae<=g.w/2;
+  const mode=P.mode,mvk=P.move,mv=MV[mvk];
+  const g=greenInfo(),err=meter-g.c,ae=Math.abs(err),perfect=ae<=g.w/2;
   let p,label,col;
   if(perfect){
     p=mode==='dunk'?1:(mode==='layup'?0.95:0.97);
-    label=mode==='dunk'?'完美灌籃!':(mode==='layup'?'完美上籃!':(fade?'完美後仰!':'完美出手!'));col='#4f4';
+    label=mvk==='jump'?'完美出手!':'完美'+mv.name+'!';col='#4f4';
   }else if(ae<=g.w*1.3){
     p=mode==='dunk'?0.8:(mode==='layup'?0.65:clamp(0.6-g.d*0.0008,0.2,0.6));
     label='還不錯';col='#ff4';
@@ -190,16 +222,40 @@ function releaseShot(){
     p=mode==='dunk'?0.1:0.07;
     label=err<0?'太早了':'太晚了';col='#f66';
   }
+  const dd=g.d;
+  const ux=(P.x-RIM.x)/Math.max(1,dd),uy=(P.y-RIM.y)/Math.max(1,dd);
+  const stk=P.stk||{x:0,y:0,m:0};
+  // 晃開防守
+  if(defOn&&(mvk==='step'||mvk==='euro'||mvk==='reverse')&&dist(P.x,P.y,Df.x,Df.y)<60&&Df.state==='guard'&&Math.random()<0.35){
+    Df.stun=Math.max(Df.stun,0.5);
+    say('晃開防守!','#4f4',Df.x,Df.y,Df.z+85);
+  }
   const c=contest();
   if(c>0.4)say('被干擾','#f96',P.x,P.y,P.z+95);
-  p*=1-(mode==='dunk'?0.25:(fade?0.3:0.55))*c;
-  if(fade)p*=0.92;
-  const block=mode!=='dunk'&&c>0.7&&Math.random()<(c-0.6)*(perfect?0.5:1.2)*(fade?0.4:1);
-  const dd=g.d;
-  P.pending={p,mode,perfect,fade,block,d:dd};
-  P.fx=(RIM.x-P.x)/Math.max(1,dd);P.fy=(RIM.y-P.y)/Math.max(1,dd);
-  P.st=0;
-  P.D={x0:P.x,y0:P.y,done:false,ok:Math.random()<p,fade,ax:(P.x-RIM.x)/Math.max(1,dd),ay:(P.y-RIM.y)/Math.max(1,dd)};
+  p*=(1-mv.cf*c)*mv.pm;
+  const block=mode!=='dunk'&&c>0.7&&Math.random()<(c-0.6)*(perfect?0.5:1.2)*mv.bk;
+  P.pending={p,mode,perfect,move:mvk,block,d:dd};
+  P.fx=-ux;P.fy=-uy;
+
+  const D={x0:P.x,y0:P.y,done:false,ok:Math.random()<p,move:mvk,angle:null,spin:!!mv.spin,
+    rel:mv.rel,total:mv.total,amp:mv.amp,disp:mv.disp||0,dx:0,dy:0};
+  if(mode==='jump'&&D.disp){
+    if(mvk==='fade'||stk.m<=0.1){D.dx=ux;D.dy=uy}
+    else{D.dx=stk.x/stk.m;D.dy=stk.y/stk.m}
+  }
+  if(mode==='layup'){
+    D.appr=mv.appr||0.45;D.zoff=mv.zoff;D.sdur=mv.sdur;D.peak=mv.peak;
+    if(mvk==='layup'){D.tx=RIM.x+(P.x<250?-14:14);D.ty=RIM.y+34}
+    else if(mvk==='reverse'){D.tx=RIM.x+(P.x<250?16:-16);D.ty=RIM.y+22}
+    else if(mvk==='euro'){
+      const side=Math.sign(stk.x*(-uy)+stk.y*ux)||1;
+      D.w1x=clamp(P.x+(-uy*side)*34,20,W-20);D.w1y=clamp(P.y+(ux*side)*34,20,H-10);
+      D.tx=RIM.x+(P.x<250?-10:10);D.ty=RIM.y+32;
+    }else{
+      D.tx=P.x+(RIM.x-P.x)*0.12;D.ty=P.y+(RIM.y-P.y)*0.12;
+    }
+  }
+  P.D=D;P.st=0;
   P.state=mode==='dunk'?'dunk':(mode==='layup'?'layup':'shoot');
   say(label,col);
 }
@@ -214,6 +270,7 @@ function launchShot(z0,dur,peak,pts,p){
   }
   shot={sx:P.x,sy:P.y,z0,t:0,dur,peak,made:Math.random()<p,pts};
   shot.perfect=!!(P.pending&&P.pending.perfect);
+  shot.move=P.pending?P.pending.move:'jump';
   B.mode='shot';S.att++;
 }
 
@@ -225,16 +282,21 @@ function burst(x,y,z,n,cols,spd){
       life:0.8+Math.random()*0.6,c:cols[i%cols.length],sz:2+Math.random()*3});
   }
 }
-function onScore(pts,kind,perfect){
+function onScore(pts,kind,perfect,mvk){
+  const mv=MV[mvk]||MV.jump;
   S.score+=pts;S.made++;S.streak++;S.best=Math.max(S.best,S.streak);
   if(kind==='three')S.threes++;
   if(kind==='dunk')S.dunks++;
   netShake=0.6;scorePop=1;
   let txt='進球!',col='#4f4',cols=['#ffd84a','#ff7a1f','#fff'];
-  if(kind==='dunk'){txt='灌籃!';col='#c6f';shake=0.45;cols=['#c6f','#ffd84a','#fff','#6cf']}
+  if(kind==='dunk'){txt=mv.name+'!';col='#c6f';shake=mv.shake||0.4;cols=['#c6f','#ffd84a','#fff','#6cf']}
   else if(kind==='three'){txt='三分球!';col='#ffd84a';shake=0.15}
+  else if(mvk!=='jump'&&mvk!=='layup'){txt=mv.name+'!';col='#6ff';shake=0.1}
   else if(perfect){txt='SWISH!';col='#6ff';shake=0.1}
-  banner={t:txt,c:col,life:1.4,sub:S.streak>=3?`🔥 連續 ${S.streak} 進`:`+${pts}`};
+  let sub=`+${pts}`;
+  if(S.streak>=3)sub=`🔥 連續 ${S.streak} 進`;
+  else if(kind==='three'&&mvk!=='jump')sub=`${mv.name} +${pts}`;
+  banner={t:txt,c:col,life:1.4,sub};
   burst(RIM.x,RIM.y,RIMZ,kind==='dunk'?60:36,cols,kind==='dunk'?170:120);
   rings.push({t:0});
   if(kind==='dunk')rings.push({t:-0.15});
@@ -357,49 +419,54 @@ function update(dt){
   }
   if(P.state==='aim'){
     meter+=dt/0.9;
-    if(P.mode==='jump'){
-      const dd=dist(P.x,P.y,RIM.x,RIM.y)||1;
-      const ux=(P.x-RIM.x)/dd,uy=(P.y-RIM.y)/dd;
-      P.fade=m>0.5&&(ax*ux+ay*uy)/m>0.6&&dd>70;
-    }
+    P.stk={x:ax,y:ay,m};
+    P.move=pickMove(P.mode,ax,ay,m);
     if(meter>=1){meter=1;releaseShot()}
   }
   if(P.state==='shoot'){
     P.st+=dt;const D=P.D;
-    P.z=Math.sin(Math.min(1,P.st/0.6)*Math.PI)*(D.fade?26:22);
-    if(D.fade&&P.st<0.5){
-      P.x=clamp(P.x+D.ax*75*dt,12,W-12);P.y=clamp(P.y+D.ay*75*dt,12,H-6);
+    P.z=Math.sin(Math.min(1,P.st/D.total)*Math.PI)*D.amp;
+    if(D.disp&&P.st<D.rel+0.15){
+      const sp=D.disp/(D.rel+0.15);
+      P.x=clamp(P.x+D.dx*sp*dt,12,W-12);P.y=clamp(P.y+D.dy*sp*dt,12,H-6);
     }
-    if(P.st>=0.25&&B.mode==='held'){
+    if(D.spin)D.angle=Math.min(1,P.st/D.rel)*Math.PI*2;
+    if(P.st>=D.rel&&B.mode==='held'){
       const q=P.pending,dL=dist(P.x,P.y,RIM.x,RIM.y);
       const three=dL>THREE_R||Math.abs(P.x-250)>220;
-      launchShot(P.z+(q.fade?60:56),0.7+dL/900,45+dL*0.25,three?3:2,q.p);
+      launchShot(P.z+(q.move==='fade'?60:56),0.7+dL/900,45+dL*0.25,three?3:2,q.p);
     }
-    if(P.st>=0.6){P.state='free';P.z=0;P.vx=P.vy=0}
+    if(P.st>=D.total){P.state='free';P.z=0;P.vx=P.vy=0;P.D=null}
   }
   if(P.state==='layup'){
-    P.st+=dt;const D=P.D,t=P.st,k2=Math.min(1,t/0.45);
-    const tx=RIM.x+(D.x0<250?-14:14),ty=RIM.y+34;
-    P.x=D.x0+(tx-D.x0)*k2;P.y=D.y0+(ty-D.y0)*k2;
-    P.z=Math.sin(Math.min(1,t/0.7)*Math.PI)*34;
-    if(t>=0.3&&B.mode==='held')launchShot(P.z+56,0.5,16,2,P.pending.p);
-    if(t>=0.7){P.state='free';P.z=0;P.D=null;P.vx=P.vy=0}
+    P.st+=dt;const D=P.D,t=P.st,mvk=D.move;
+    if(mvk==='euro'){
+      if(t<0.22){const kk=t/0.22;P.x=D.x0+(D.w1x-D.x0)*kk;P.y=D.y0+(D.w1y-D.y0)*kk}
+      else{const kk=Math.min(1,(t-0.22)/0.33);P.x=D.w1x+(D.tx-D.w1x)*kk;P.y=D.w1y+(D.ty-D.w1y)*kk}
+    }else{
+      const k2=Math.min(1,t/D.appr);
+      P.x=D.x0+(D.tx-D.x0)*k2;P.y=D.y0+(D.ty-D.y0)*k2;
+    }
+    P.z=Math.sin(Math.min(1,t/D.total)*Math.PI)*D.amp+(mvk==='euro'&&t<0.22?Math.sin(t/0.22*Math.PI)*8:0);
+    if(t>=D.rel&&B.mode==='held')launchShot(P.z+D.zoff,D.sdur,D.peak,2,P.pending.p);
+    if(t>=D.total){P.state='free';P.z=0;P.D=null;P.vx=P.vy=0}
   }
   if(P.state==='dunk'){
-    P.st+=dt;const D=P.D,t=P.st,k2=Math.min(1,t/0.65);
+    P.st+=dt;const D=P.D,t=P.st,k2=Math.min(1,t/(D.rel-0.05));
     P.x=D.x0+(RIM.x-D.x0)*k2;P.y=D.y0+(RIM.y+18-D.y0)*k2;
-    P.z=Math.sin(Math.min(1,t/0.95)*Math.PI)*55;
-    if(t>=0.7&&!D.done){
+    P.z=Math.sin(Math.min(1,t/D.total)*Math.PI)*D.amp;
+    if(D.spin)D.angle=Math.min(1,t/D.rel)*Math.PI*2;
+    if(t>=D.rel&&!D.done){
       D.done=true;S.att++;
       if(D.ok){
-        onScore(2,'dunk',true);
+        onScore(2,'dunk',true,D.move);
         Object.assign(B,{mode:'loose',x:RIM.x,y:RIM.y,z:RIMZ+4,vx:0,vy:10,vz:-150});
       }else{
         S.streak=0;say('扣框!','#f66',RIM.x,RIM.y,125);netShake=0.3;
         Object.assign(B,{mode:'loose',x:RIM.x,y:RIM.y,z:RIMZ+10,vx:(Math.random()-.5)*100,vy:60+Math.random()*80,vz:200});
       }
     }
-    if(t>=0.95){P.state='free';P.z=0;P.D=null;P.vx=P.vy=0}
+    if(t>=D.total){P.state='free';P.z=0;P.D=null;P.vx=P.vy=0}
   }
 
   updateDef(dt);
@@ -411,14 +478,19 @@ function update(dt){
     else if(P.state==='aim'||P.state==='shoot'){B.x=P.x;B.y=P.y-3;B.z=P.z+54}
     else if(P.state==='fake'){B.x=P.x;B.y=P.y-3;B.z=P.z+36+18*Math.sin(Math.min(1,P.st/0.35)*Math.PI)}
     else if(P.state==='layup'){B.x=P.x+8;B.y=P.y-3;B.z=P.z+56}
-    else if(P.state==='dunk'){B.x=P.x;B.y=P.y-4;B.z=P.z+60}
+    else if(P.state==='dunk'){
+      const D=P.D,kk=Math.min(1,P.st/D.rel);
+      if(D.move==='wind'){const ang=kk*Math.PI*2.5;B.x=P.x+Math.cos(ang)*18;B.y=P.y-4;B.z=P.z+46+Math.sin(ang)*26}
+      else if(D.move==='dunk2'){B.x=P.x;B.y=P.y-4;B.z=P.z+68}
+      else{B.x=P.x;B.y=P.y-4;B.z=P.z+60}
+    }
   }else if(B.mode==='shot'){
     shot.t+=dt/shot.dur;const t=Math.min(1,shot.t);
     B.x=shot.sx+(RIM.x-shot.sx)*t;B.y=shot.sy+(RIM.y-shot.sy)*t;
     B.z=shot.z0+(RIMZ-shot.z0)*t+shot.peak*4*t*(1-t);
     if(shot.t>=1){
       if(shot.made){
-        onScore(shot.pts,shot.pts===3?'three':'normal',shot.perfect);
+        onScore(shot.pts,shot.pts===3?'three':'normal',shot.perfect,shot.move);
         Object.assign(B,{mode:'loose',x:RIM.x,y:RIM.y,z:RIMZ,vx:(Math.random()-.5)*20,vy:20,vz:-100});
       }else{
         S.streak=0;say('沒進','#f66',RIM.x,RIM.y,110);
@@ -547,6 +619,11 @@ function drawPerson(o,def){
   const g=pr(o.x,o.y,0),b=pr(o.x,o.y,o.z),s=b.s,X=b.x,Y=b.y;
   ctx.fillStyle='rgba(0,0,0,.32)';ctx.beginPath();
   ctx.ellipse(g.x,g.y,14*s*(1-o.z/220),5.5*s,0,0,Math.PI*2);ctx.fill();
+  let spun=false;
+  if(!def&&P.D&&P.D.spin&&P.D.angle!=null&&(P.state==='shoot'||P.state==='dunk')){
+    let c=Math.cos(P.D.angle);if(Math.abs(c)<0.2)c=c<0?-0.2:0.2;
+    ctx.save();ctx.translate(X,Y);ctx.scale(c,1);ctx.translate(-X,-Y);spun=true;
+  }
   const run=Math.min(1,Math.hypot(o.vx,o.vy)/150),sw=Math.sin(time*14+(def?1.5:0))*run;
   ctx.lineCap='round';ctx.strokeStyle=SKIN;ctx.lineWidth=5*s;
   [[-1,sw],[1,-sw]].forEach(([d,w])=>{
@@ -580,6 +657,7 @@ function drawPerson(o,def){
   }
   ctx.fillStyle=SKIN;ctx.beginPath();ctx.arc(X,Y-46*s,6.5*s,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#222';ctx.beginPath();ctx.arc(X,Y-46*s,6.5*s,Math.PI,Math.PI*2);ctx.fill();
+  if(spun)ctx.restore();
 }
 function drawBall(){
   const g=pr(B.x,B.y,0),b=pr(B.x,B.y,B.z),r=7*b.s;
@@ -599,7 +677,9 @@ function drawMeter(){
   ctx.fillStyle='#2e2';ctx.fillRect(bx,by+bh*(1-(g.c+g.w/2)),bw,bh*g.w);
   ctx.fillStyle='#fc3';ctx.fillRect(bx,by+bh*(1-meter),bw,bh*meter);
   ctx.fillStyle='#fff';ctx.fillRect(bx-3,by+bh*(1-meter)-1,bw+6,3);
-  ctx.font='bold 12px sans-serif';ctx.textAlign='center';ctx.fillText(modeLabel(),bx+bw/2,by-6);
+  ctx.font='bold 12px sans-serif';ctx.textAlign='center';
+  ctx.lineWidth=3;ctx.strokeStyle='#000';
+  ctx.strokeText(modeLabel(),bx+bw/2,by-6);ctx.fillStyle='#fff';ctx.fillText(modeLabel(),bx+bw/2,by-6);
 }
 function drawHUD(){
   ctx.fillStyle='rgba(0,0,0,.7)';ctx.fillRect(0,0,W,40);
@@ -618,6 +698,11 @@ function drawHUD(){
   ctx.fillStyle='#444';ctx.fillRect(385,10,105,9);
   ctx.fillStyle=P.stamina>0.25?'#3cf':'#f55';ctx.fillRect(385,10,105*P.stamina,9);
   ctx.fillStyle='#aaa';ctx.font='11px sans-serif';ctx.fillText('體力',385,33);
+  if(P.state==='aim'){
+    ctx.textAlign='center';ctx.font='12px sans-serif';
+    ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(40,44,420,20);
+    ctx.fillStyle='#ffd84a';ctx.fillText('拖曳搖桿換動作: '+HINT[P.mode],250,58);
+  }
 }
 function drawTexts(){
   ctx.textAlign='center';ctx.font='bold 18px sans-serif';
