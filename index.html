@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>半場街球 Demo</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;touch-action:none}
+  html,body{margin:0;height:100%;background:#111;overflow:hidden;font-family:"Microsoft JhengHei",sans-serif}
+  #game{position:fixed;inset:0;width:100vw;height:100dvh;object-fit:contain;display:block}
+  #joy{position:fixed;left:5vmin;bottom:5vmin;width:30vmin;height:30vmin;max-width:150px;max-height:150px;min-width:110px;min-height:110px;
+       border-radius:50%;background:rgba(255,255,255,.15);border:2px solid rgba(255,255,255,.4)}
+  #knob{position:absolute;left:50%;top:50%;width:42%;height:42%;margin:-21% 0 0 -21%;border-radius:50%;background:rgba(255,255,255,.6)}
+  .btn{position:fixed;border-radius:50%;color:#fff;font-weight:bold;display:flex;align-items:center;justify-content:center;
+       border:2px solid rgba(255,255,255,.6);text-align:center;font-size:15px;line-height:1.1}
+  .btn.on{filter:brightness(1.6);transform:scale(.94)}
+  #bShoot{right:5vmin;bottom:9vmin;width:92px;height:92px;background:rgba(230,80,40,.8);font-size:20px}
+  #bDunk{right:calc(5vmin + 100px);bottom:5vmin;width:72px;height:72px;background:rgba(150,60,200,.8)}
+  #bSprint{right:calc(5vmin + 100px);bottom:calc(5vmin + 82px);width:64px;height:64px;background:rgba(40,130,220,.8)}
+  #bCross{right:5vmin;bottom:calc(9vmin + 102px);width:64px;height:64px;background:rgba(30,160,100,.8)}
+  #bReset{position:fixed;right:8px;top:8px;padding:6px 10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #888;border-radius:8px;font-size:13px}
+</style>
+</head>
+<body>
+<canvas id="game" width="500" height="530"></canvas>
+<div id="joy"><div id="knob"></div></div>
+<div class="btn" id="bShoot">投籃<br>(按住)</div>
+<div class="btn" id="bDunk">灌籃</div>
+<div class="btn" id="bSprint">加速</div>
+<div class="btn" id="bCross">換手<br>運球</div>
+<div id="bReset">重置</div>
+
+<script>
+const cv=document.getElementById('game'),ctx=cv.getContext('2d');
+const W=500,H=470,OY=44;
+const RIM={x:250,y:52},RIMZ=24,G=900,THREE_R=237;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const dist=(a,b,c,d)=>Math.hypot(a-c,b-d);
+
+const P={x:250,y:330,vx:0,vy:0,fx:0,fy:-1,z:0,hand:1,state:'free',st:0,stamina:1,cross:0,dunk:null};
+const B={x:250,y:330,z:0,vx:0,vy:0,vz:0,mode:'held'};
+let shot=null,meter=0,aiming=false;
+const S={score:0,made:0,att:0,streak:0,best:0};
+let texts=[],netShake=0,time=0;
+const input={jx:0,jy:0,shoot:false,dunk:false,sprint:false,cross:false,keys:{}};
+
+function say(t,c='#fff',x=P.x,y=P.y-70){texts.push({t,c,x,y,life:1.1})}
+
+function reset(){
+  Object.assign(P,{x:250,y:330,vx:0,vy:0,z:0,state:'free',dunk:null,stamina:1});
+  Object.assign(B,{mode:'held',z:0,vx:0,vy:0,vz:0});
+  shot=null;aiming=false;meter=0;
+}
+document.getElementById('bReset').addEventListener('pointerdown',reset);
+
+// ---------- 搖桿 ----------
+const joy=document.getElementById('joy'),knob=document.getElementById('knob');
+let joyId=null;
+function joyMove(e){
+  const r=joy.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2,R=r.width/2;
+  let dx=e.clientX-cx,dy=e.clientY-cy,d=Math.hypot(dx,dy);
+  if(d>R){dx*=R/d;dy*=R/d;d=R}
+  input.jx=dx/R;input.jy=dy/R;
+  knob.style.transform=`translate(${dx}px,${dy}px)`;
+}
+joy.addEventListener('pointerdown',e=>{joyId=e.pointerId;joy.setPointerCapture(e.pointerId);joyMove(e)});
+joy.addEventListener('pointermove',e=>{if(e.pointerId===joyId)joyMove(e)});
+const joyEnd=e=>{if(e.pointerId===joyId){joyId=null;input.jx=input.jy=0;knob.style.transform=''}};
+joy.addEventListener('pointerup',joyEnd);joy.addEventListener('pointercancel',joyEnd);
+
+// ---------- 按鈕 ----------
+function bindBtn(id,down,up){
+  const el=document.getElementById(id);
+  el.addEventListener('pointerdown',e=>{el.setPointerCapture(e.pointerId);el.classList.add('on');down()});
+  const end=()=>{el.classList.remove('on');up&&up()};
+  el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+}
+bindBtn('bShoot',()=>{input.shoot=true;startAim()},()=>{input.shoot=false;releaseShot()});
+bindBtn('bDunk',()=>tryDunk());
+bindBtn('bSprint',()=>input.sprint=true,()=>input.sprint=false);
+bindBtn('bCross',()=>crossover());
+
+// ---------- 鍵盤 ----------
+addEventListener('keydown',e=>{
+  if(e.repeat)return;
+  input.keys[e.code]=true;
+  if(e.code==='KeyJ')startAim();
+  if(e.code==='KeyK')tryDunk();
+  if(e.code==='Space'){crossover();e.preventDefault()}
+});
+addEventListener('keyup',e=>{
+  input.keys[e.code]=false;
+  if(e.code==='KeyJ')releaseShot();
+});
+
+// ---------- 動作 ----------
+function crossover(){
+  if(P.state==='free'&&B.mode==='held'){P.hand*=-1;P.cross=0.3;say('換手運球','#8ff')}
+}
+function startAim(){
+  if(P.state!=='free'||B.mode!=='held')return;
+  P.state='aim';aiming=true;meter=0;
+}
+function greenInfo(){
+  const d=dist(P.x,P.y,RIM.x,RIM.y);
+  return {c:0.82,w:clamp(0.22-d*0.0006,0.05,0.2),d};
+}
+function releaseShot(){
+  if(P.state!=='aim')return;
+  aiming=false;
+  const g=greenInfo(),err=meter-g.c,ae=Math.abs(err);
+  let p,label,col;
+  if(ae<=g.w/2){p=0.97;label='完美出手!';col='#4f4'}
+  else if(ae<=g.w*1.3){p=clamp(0.6-g.d*0.0008,0.2,0.6);label='還不錯';col='#ff4'}
+  else{p=0.06;label=err<0?'太早了':'太晚了';col='#f66'}
+  P.state='shoot';P.st=0;
+  P.fx=(RIM.x-P.x)/Math.max(1,g.d);P.fy=(RIM.y-P.y)/Math.max(1,g.d);
+  P.pending={p,label,col,three:g.d>THREE_R||Math.abs(P.x-250)>220,d:g.d,perfect:ae<=g.w/2};
+}
+function doRelease(){
+  const q=P.pending,d=q.d;
+  shot={sx:P.x,sy:P.y,z0:P.z+30,t:0,dur:0.7+d/900,peak:45+d*0.25,made:Math.random()<q.p,pts:q.three?3:2,info:q};
+  B.mode='shot';S.att++;
+  say(q.label,q.col);
+}
+function tryDunk(){
+  if(P.state!=='free'||B.mode!=='held')return;
+  const d=dist(P.x,P.y,RIM.x,RIM.y);
+  if(d>100){say('離籃框太遠','#f88');return}
+  P.state='dunk';P.st=0;P.dunk={x0:P.x,y0:P.y,done:false};
+}
+
+// ---------- 更新 ----------
+function update(dt){
+  time+=dt;
+  const k=input.keys;
+  let ax=input.jx,ay=input.jy;
+  if(k.KeyA||k.ArrowLeft)ax-=1;if(k.KeyD||k.ArrowRight)ax+=1;
+  if(k.KeyW||k.ArrowUp)ay-=1;if(k.KeyS||k.ArrowDown)ay+=1;
+  let m=Math.hypot(ax,ay);if(m>1){ax/=m;ay/=m;m=1}
+  const sprint=(input.sprint||k.KeyL)&&P.stamina>0.02&&m>0.2;
+
+  if(P.state==='free'||P.state==='aim'){
+    let sp=sprint?230:150;
+    if(P.cross>0){sp*=1.25;P.cross-=dt}
+    if(P.state==='aim')sp*=0.15;
+    const tx=ax*sp,ty=ay*sp;
+    P.vx+=(tx-P.vx)*Math.min(1,dt*10);P.vy+=(ty-P.vy)*Math.min(1,dt*10);
+    if(m>0.15&&P.state==='free'){P.fx=ax/m;P.fy=ay/m}
+    P.x=clamp(P.x+P.vx*dt,12,W-12);P.y=clamp(P.y+P.vy*dt,12,H-6);
+    P.stamina=clamp(P.stamina+(sprint?-0.45:0.25)*dt,0,1);
+  }
+  if(P.state==='aim'){
+    meter+=dt/0.9;
+    P.fx=(RIM.x-P.x)/dist(P.x,P.y,RIM.x,RIM.y);P.fy=(RIM.y-P.y)/dist(P.x,P.y,RIM.x,RIM.y);
+    if(meter>=1){meter=1;releaseShot()}
+  }
+  if(P.state==='shoot'){
+    P.st+=dt;
+    P.z=Math.sin(Math.min(1,P.st/0.6)*Math.PI)*22;
+    if(P.st>=0.25&&B.mode==='held')doRelease();
+    if(P.st>=0.6){P.state='free';P.z=0;P.vx=P.vy=0}
+  }
+  if(P.state==='dunk'){
+    P.st+=dt;const D=P.dunk,t=P.st;
+    const k2=Math.min(1,t/0.65);
+    P.x=D.x0+(RIM.x-D.x0)*k2;P.y=D.y0+(RIM.y+14-D.y0)*k2;
+    P.z=Math.sin(Math.min(1,t/0.95)*Math.PI)*60;
+    if(t>=0.7&&!D.done){
+      D.done=true;S.att++;S.made++;S.streak++;S.best=Math.max(S.best,S.streak);S.score+=2;netShake=0.5;
+      say('灌籃!!','#c6f',RIM.x,120);
+      Object.assign(B,{mode:'loose',x:RIM.x,y:RIM.y,z:RIMZ,vx:0,vy:15,vz:-120});
+    }
+    if(t>=0.95){P.state='free';P.z=0;P.dunk=null;P.vx=P.vy=0}
+  }
+
+  // 球
+  if(B.mode==='held'){
+    const bounce=Math.abs(Math.sin(time*(8+Math.hypot(P.vx,P.vy)/25)));
+    B.x=P.x+P.hand*13+P.fx*5;B.y=P.y+4;
+    B.z=P.state==='free'?6+bounce*20:(P.state==='aim'?34:P.z+30);
+    if(P.state==='dunk')B.z=P.z+28;
+    if(P.state==='aim')B.z=34;
+  }else if(B.mode==='shot'){
+    shot.t+=dt/shot.dur;const t=Math.min(1,shot.t);
+    B.x=shot.sx+(RIM.x-shot.sx)*t;B.y=shot.sy+(RIM.y-shot.sy)*t;
+    B.z=shot.z0+(RIMZ-shot.z0)*t+shot.peak*4*t*(1-t);
+    if(shot.t>=1){
+      const q=shot.info;
+      if(shot.made){
+        S.made++;S.streak++;S.best=Math.max(S.best,S.streak);S.score+=shot.pts;netShake=0.5;
+        say(`+${shot.pts} 進球!`,'#4f4',RIM.x,110);
+        Object.assign(B,{mode:'loose',x:RIM.x,y:RIM.y,z:RIMZ,vx:(Math.random()-.5)*20,vy:20,vz:-100});
+      }else{
+        S.streak=0;say('沒進','#f66',RIM.x,110);
+        Object.assign(B,{mode:'loose',x:RIM.x,y:RIM.y,z:RIMZ,vx:(Math.random()-.5)*140,vy:60+Math.random()*90,vz:180});
+      }
+      shot=null;
+    }
+  }else if(B.mode==='loose'){
+    B.x+=B.vx*dt;B.y+=B.vy*dt;B.z+=B.vz*dt;B.vz-=G*dt;
+    if(B.z<=0){B.z=0;B.vz=-B.vz*0.55;if(Math.abs(B.vz)<45)B.vz=0;B.vx*=0.9;B.vy*=0.9}
+    if(B.z===0){const f=Math.max(0,1-1.2*dt);B.vx*=f;B.vy*=f}
+    if(B.x<5||B.x>W-5){B.vx*=-0.7;B.x=clamp(B.x,5,W-5)}
+    if(B.y<5||B.y>H-5){B.vy*=-0.7;B.y=clamp(B.y,5,H-5)}
+    if(P.state==='free'&&B.z<22&&dist(P.x,P.y,B.x,B.y)<24){B.mode='held';say('撿到球','#ddd')}
+  }
+  if(netShake>0)netShake-=dt;
+  texts.forEach(t=>{t.life-=dt;t.y-=25*dt});texts=texts.filter(t=>t.life>0);
+}
+
+// ---------- 繪圖 ----------
+function drawCourt(){
+  ctx.fillStyle='#222';ctx.fillRect(0,0,W,530);
+  ctx.save();ctx.translate(0,OY);
+  ctx.fillStyle='#c98f4f';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,0,0,.05)';
+  for(let x=0;x<W;x+=25)if((x/25)%2)ctx.fillRect(x,0,25,H);
+  ctx.fillStyle='#a8452f';ctx.fillRect(170,0,160,190);
+  ctx.strokeStyle='#fff';ctx.lineWidth=3;
+  ctx.strokeRect(1.5,0,W-3,H-1.5);
+  ctx.strokeRect(170,0,160,190);
+  ctx.beginPath();ctx.arc(250,190,60,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(RIM.x,RIM.y,40,0,Math.PI);ctx.stroke();
+  const a1=Math.atan2(88,220);
+  ctx.beginPath();ctx.moveTo(30,0);ctx.lineTo(30,140);ctx.arc(250,52,THREE_R,Math.PI-a1,a1,true);ctx.lineTo(470,0);ctx.stroke();
+  ctx.beginPath();ctx.arc(250,H,60,Math.PI,Math.PI*2);ctx.stroke();
+  ctx.restore();
+}
+function drawRim(back){
+  const sx=RIM.x,sy=RIM.y+OY;
+  if(back){
+    ctx.fillStyle='#eee';ctx.strokeStyle='#888';ctx.lineWidth=2;
+    ctx.fillRect(sx-30,sy-RIMZ-22,60,22);ctx.strokeRect(sx-30,sy-RIMZ-22,60,22);
+    ctx.strokeStyle='#e33';ctx.strokeRect(sx-10,sy-RIMZ-12,20,10);
+  }else{
+    const sh=netShake>0?Math.sin(time*50)*3:0;
+    ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=1;
+    for(let i=-2;i<=2;i++){ctx.beginPath();ctx.moveTo(sx+i*5.5,sy-RIMZ);ctx.lineTo(sx+i*3+sh,sy-RIMZ+18);ctx.stroke()}
+    ctx.strokeStyle='#ff5a1f';ctx.lineWidth=4;
+    ctx.beginPath();ctx.ellipse(sx,sy-RIMZ,13,5,0,0,Math.PI*2);ctx.stroke();
+  }
+}
+function drawPlayer(){
+  const sx=P.x,sy=P.y+OY;
+  ctx.fillStyle='rgba(0,0,0,.3)';ctx.beginPath();ctx.ellipse(sx,sy,13,5,0,0,Math.PI*2);ctx.fill();
+  const z=P.z,bob=P.state==='free'?Math.sin(time*14)*Math.min(2,Math.hypot(P.vx,P.vy)/60):0;
+  ctx.fillStyle='#222';ctx.fillRect(sx-8,sy-10-z,6,10);ctx.fillRect(sx+2,sy-10-z,6,10);
+  ctx.fillStyle='#e8c';ctx.fillStyle='#d8362b';
+  ctx.beginPath();ctx.roundRect(sx-10,sy-30-z+bob,20,22,5);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText('23',sx,sy-15-z+bob);
+  ctx.fillStyle='#f1c9a0';ctx.beginPath();ctx.arc(sx,sy-38-z+bob,7,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#f1c9a0';ctx.lineWidth=4;ctx.lineCap='round';
+  ctx.beginPath();
+  if(P.state==='shoot'||P.state==='aim'||P.state==='dunk'){
+    ctx.moveTo(sx-8,sy-26-z);ctx.lineTo(sx-5,sy-48-z);ctx.moveTo(sx+8,sy-26-z);ctx.lineTo(sx+5,sy-48-z);
+  }else{
+    ctx.moveTo(sx+P.hand*9,sy-26-z);ctx.lineTo(B.x,B.y+OY-B.z);
+  }
+  ctx.stroke();
+}
+function drawBall(){
+  const sx=B.x,sy=B.y+OY;
+  ctx.fillStyle='rgba(0,0,0,.3)';ctx.beginPath();ctx.ellipse(sx,sy,7,3,0,0,Math.PI*2);ctx.fill();
+  const by=sy-B.z;
+  ctx.fillStyle='#f28a1e';ctx.beginPath();ctx.arc(sx,by,7,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#4a2200';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(sx,by,7,0,Math.PI*2);ctx.moveTo(sx-7,by);ctx.lineTo(sx+7,by);ctx.moveTo(sx,by-7);ctx.lineTo(sx,by+7);ctx.stroke();
+}
+function drawMeter(){
+  if(P.state!=='aim'&&!(P.state==='shoot'&&P.st<0.5))return;
+  const g=greenInfo(),bx=P.x+26,bh=80,by=P.y+OY-bh-20,bw=12;
+  ctx.fillStyle='rgba(0,0,0,.65)';ctx.fillRect(bx-2,by-2,bw+4,bh+4);
+  ctx.fillStyle='#333';ctx.fillRect(bx,by,bw,bh);
+  const gt=by+bh*(1-(g.c+g.w/2)),gh=bh*g.w;
+  ctx.fillStyle='#2e2';ctx.fillRect(bx,gt,bw,gh);
+  ctx.fillStyle='#fc3';ctx.fillRect(bx,by+bh*(1-meter),bw,bh*meter);
+  ctx.fillStyle='#fff';ctx.fillRect(bx-3,by+bh*(1-meter)-1,bw+6,3);
+}
+function drawHUD(){
+  ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(0,0,W,40);
+  ctx.fillStyle='#fff';ctx.textAlign='left';ctx.font='bold 18px sans-serif';
+  ctx.fillText(`得分 ${S.score}`,10,26);
+  ctx.font='13px sans-serif';
+  ctx.fillText(`命中 ${S.made}/${S.att}  ${S.att?Math.round(S.made/S.att*100):0}%`,100,16);
+  ctx.fillText(`連續 ${S.streak}  最佳 ${S.best}`,100,34);
+  ctx.fillStyle='#444';ctx.fillRect(250,12,110,10);
+  ctx.fillStyle=P.stamina>0.25?'#3cf':'#f55';ctx.fillRect(250,12,110*P.stamina,10);
+  ctx.fillStyle='#fff';ctx.font='11px sans-serif';ctx.fillText('體力',250,34);
+}
+function drawTexts(){
+  ctx.textAlign='center';ctx.font='bold 18px sans-serif';
+  texts.forEach(t=>{ctx.globalAlpha=Math.min(1,t.life*2);ctx.lineWidth=3;ctx.strokeStyle='#000';
+    ctx.strokeText(t.t,t.x,t.y+OY);ctx.fillStyle=t.c;ctx.fillText(t.t,t.x,t.y+OY)});
+  ctx.globalAlpha=1;
+}
+function draw(){
+  drawCourt();drawRim(true);
+  const items=[{y:P.y,f:drawPlayer}];
+  if(B.mode!=='held'||true)items.push({y:B.mode==='held'?P.y+1:B.y,f:drawBall});
+  items.sort((a,b)=>a.y-b.y).forEach(i=>i.f());
+  drawRim(false);drawMeter();drawHUD();drawTexts();
+}
+
+let last=performance.now();
+function loop(n){
+  const dt=Math.min(0.04,(n-last)/1000);last=n;
+  update(dt);draw();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
