@@ -11,7 +11,7 @@
   #joy{position:fixed;left:5vmin;bottom:5vmin;width:30vmin;height:30vmin;max-width:150px;max-height:150px;min-width:110px;min-height:110px;
        border-radius:50%;background:rgba(255,255,255,.15);border:2px solid rgba(255,255,255,.4)}
   #knob{position:absolute;left:50%;top:50%;width:42%;height:42%;margin:-21% 0 0 -21%;border-radius:50%;background:rgba(255,255,255,.6)}
-  #pad{position:fixed;right:2vmin;bottom:3vmin;width:230px;height:230px;pointer-events:none}
+  #pad{position:fixed;right:2vmin;bottom:3vmin;width:260px;height:260px;pointer-events:none}
   .btn{position:absolute;pointer-events:auto;border-radius:50%;color:#fff;font-weight:bold;display:flex;align-items:center;justify-content:center;
        border:2px solid rgba(255,255,255,.6);text-align:center;font-size:15px;line-height:1.1}
   .btn.on{filter:brightness(1.6);transform:scale(.94)}
@@ -19,7 +19,10 @@
   #bSprint{right:131px;bottom:16px;width:64px;height:64px;background:rgba(40,130,220,.85)}
   #bCall{right:99px;bottom:99px;width:60px;height:60px;background:rgba(210,160,0,.9)}
   #bCross{right:16px;bottom:131px;width:64px;height:64px;background:rgba(30,160,100,.85)}
-  #bReset{position:fixed;right:8px;top:8px;padding:6px 10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #888;border-radius:8px;font-size:13px}
+  #bFake{right:107px;bottom:172px;width:58px;height:58px;background:rgba(150,70,200,.9);font-size:14px}
+  .tbtn{position:fixed;right:8px;padding:6px 10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #888;border-radius:8px;font-size:13px}
+  #bReset{top:8px}
+  #bDef{top:44px}
 </style>
 </head>
 <body>
@@ -30,8 +33,10 @@
   <div class="btn" id="bSprint">加速</div>
   <div class="btn" id="bCall">要球</div>
   <div class="btn" id="bCross">換手<br>運球</div>
+  <div class="btn" id="bFake">假動作</div>
 </div>
-<div id="bReset">重置</div>
+<div class="tbtn" id="bReset">重置</div>
+<div class="tbtn" id="bDef">防守:開</div>
 
 <script>
 const cv=document.getElementById('game'),ctx=cv.getContext('2d');
@@ -47,8 +52,10 @@ function pr(x,y,z=0){
   return {x:250+(x-250)*s*0.94,y:CAM_NEAR-(1-s)*CAM_Q-z*s,s};
 }
 
-const P={x:250,y:340,vx:0,vy:0,fx:0,fy:-1,z:0,hand:1,state:'free',st:0,stamina:1,cross:0,D:null,mode:'jump',pending:null};
-const B={x:250,y:340,z:0,vx:0,vy:0,vz:0,mode:'held'};
+const P={x:250,y:340,vx:0,vy:0,fx:0,fy:-1,z:0,hand:1,state:'free',st:0,stamina:1,cross:0,D:null,mode:'jump',pending:null,fade:false,fakeCd:0,imm:0};
+const B={x:250,y:340,z:0,vx:0,vy:0,vz:0,mode:'held',lock:0};
+const Df={x:250,y:200,vx:0,vy:0,z:0,state:'guard',st:0,stun:0,steal:0,cool:0,react:false,bite:false,rt:0.4};
+let defOn=true;
 let shot=null,pass=null,meter=0;
 const S={score:0,made:0,att:0,streak:0,best:0,threes:0,dunks:0,time:0};
 let parts=[],rings=[],banner=null,shake=0,scorePop=0;
@@ -58,11 +65,17 @@ const input={jx:0,jy:0,sprint:false,keys:{}};
 function say(t,c='#fff',x=P.x,y=P.y,z=(P.z||0)+75){texts.push({t,c,x,y,z,life:1.1})}
 
 function reset(){
-  Object.assign(P,{x:250,y:340,vx:0,vy:0,z:0,state:'free',D:null,stamina:1,pending:null});
-  Object.assign(B,{mode:'held',z:0,vx:0,vy:0,vz:0});
+  Object.assign(P,{x:250,y:340,vx:0,vy:0,z:0,state:'free',D:null,stamina:1,pending:null,fade:false,fakeCd:0,imm:0});
+  Object.assign(B,{mode:'held',z:0,vx:0,vy:0,vz:0,lock:0});
+  Object.assign(Df,{x:250,y:200,vx:0,vy:0,z:0,state:'guard',st:0,stun:0,steal:0,cool:0,react:false,bite:false});
   shot=null;pass=null;meter=0;
 }
 document.getElementById('bReset').addEventListener('pointerdown',reset);
+const defBtn=document.getElementById('bDef');
+defBtn.addEventListener('pointerdown',()=>{
+  defOn=!defOn;defBtn.textContent='防守:'+(defOn?'開':'關');
+  Object.assign(Df,{x:250,y:200,vx:0,vy:0,z:0,state:'guard',st:0,stun:0,steal:0,cool:0,react:false,bite:false});
+});
 
 // ---------- 搖桿 ----------
 const joy=document.getElementById('joy'),knob=document.getElementById('knob');
@@ -90,6 +103,7 @@ bindBtn('bShoot',()=>startAim(),()=>releaseShot());
 bindBtn('bSprint',()=>input.sprint=true,()=>input.sprint=false);
 bindBtn('bCall',()=>callBall());
 bindBtn('bCross',()=>crossover());
+bindBtn('bFake',()=>pumpFake());
 
 // ---------- 鍵盤 ----------
 addEventListener('keydown',e=>{
@@ -97,6 +111,7 @@ addEventListener('keydown',e=>{
   input.keys[e.code]=true;
   if(e.code==='KeyJ')startAim();
   if(e.code==='KeyE')callBall();
+  if(e.code==='KeyF')pumpFake();
   if(e.code==='Space'){crossover();e.preventDefault()}
 });
 addEventListener('keyup',e=>{
@@ -107,9 +122,10 @@ addEventListener('keyup',e=>{
 // ---------- 動作 ----------
 const MODE_NAME={jump:'投籃',layup:'上籃',dunk:'灌籃'};
 function modeByDist(d){return d<=85?'dunk':(d<=130?'layup':'jump')}
+function modeLabel(){return (P.mode==='jump'&&P.fade)?'後仰':MODE_NAME[P.mode]}
 
 function crossover(){
-  if(P.state==='free'&&B.mode==='held'){P.hand*=-1;P.cross=0.3;say('換手運球','#8ff')}
+  if(P.state==='free'&&B.mode==='held'){P.hand*=-1;P.cross=0.3;P.imm=0.6;say('換手運球','#8ff')}
 }
 function callBall(){
   if(P.state!=='free')return;
@@ -119,24 +135,54 @@ function callBall(){
     say('要球!','#fd4');
   }
 }
+function pumpFake(){
+  if(P.state!=='free'||B.mode!=='held'||P.fakeCd>0)return;
+  P.state='fake';P.st=0;P.fakeCd=0.7;P.imm=0.8;
+  say('假動作!','#c8f');
+  if(defOn){
+    const d=dist(P.x,P.y,Df.x,Df.y);
+    if(d<110&&Df.state==='guard'&&Df.stun<=0&&Math.random()<0.7){
+      Df.state='jump';Df.st=0;Df.bite=true;
+      say('騙到防守!','#4f4',Df.x,Df.y,Df.z+85);
+    }
+  }
+}
 function startAim(){
+  if(P.state==='fake'&&B.mode==='held'){P.state='free';P.z=0}
   if(P.state!=='free'||B.mode!=='held')return;
   P.mode=modeByDist(dist(P.x,P.y,RIM.x,RIM.y));
+  P.fade=false;
+  Df.rt=0.25+Math.random()*0.35;
   P.state='aim';meter=0;
 }
 function greenInfo(){
   const d=dist(P.x,P.y,RIM.x,RIM.y);
   if(P.mode==='dunk')return {c:0.82,w:0.24,d};
   if(P.mode==='layup')return {c:0.82,w:0.20,d};
-  return {c:0.82,w:clamp(0.22-d*0.0006,0.05,0.2),d};
+  return {c:0.82,w:clamp(0.22-d*0.0006-(P.fade?0.03:0),0.04,0.2),d};
+}
+// 防守干擾程度 0~1
+function contest(){
+  if(!defOn)return 0;
+  const vx=Df.x-P.x,vy=Df.y-P.y,d=Math.hypot(vx,vy);
+  let c=clamp(1-d/70,0,1);
+  const rx=RIM.x-P.x,ry=RIM.y-P.y,rl=Math.hypot(rx,ry)||1;
+  const dot=(vx*rx+vy*ry)/((d||1)*rl);
+  if(dot<0.3)c*=0.5;
+  if(c>0&&Df.state==='jump'&&Df.z>6)c=Math.min(1,c+0.25);
+  if(Df.stun>0)c*=0.2;
+  return c;
 }
 function releaseShot(){
   if(P.state!=='aim')return;
+  if(meter<0.12){P.state='free';pumpFake();return}
   const g=greenInfo(),err=meter-g.c,ae=Math.abs(err),mode=P.mode;
+  const fade=mode==='jump'&&P.fade;
+  const perfect=ae<=g.w/2;
   let p,label,col;
-  if(ae<=g.w/2){
+  if(perfect){
     p=mode==='dunk'?1:(mode==='layup'?0.95:0.97);
-    label=mode==='dunk'?'完美灌籃!':(mode==='layup'?'完美上籃!':'完美出手!');col='#4f4';
+    label=mode==='dunk'?'完美灌籃!':(mode==='layup'?'完美上籃!':(fade?'完美後仰!':'完美出手!'));col='#4f4';
   }else if(ae<=g.w*1.3){
     p=mode==='dunk'?0.8:(mode==='layup'?0.65:clamp(0.6-g.d*0.0008,0.2,0.6));
     label='還不錯';col='#ff4';
@@ -144,14 +190,28 @@ function releaseShot(){
     p=mode==='dunk'?0.1:0.07;
     label=err<0?'太早了':'太晚了';col='#f66';
   }
+  const c=contest();
+  if(c>0.4)say('被干擾','#f96',P.x,P.y,P.z+95);
+  p*=1-(mode==='dunk'?0.25:(fade?0.3:0.55))*c;
+  if(fade)p*=0.92;
+  const block=mode!=='dunk'&&c>0.7&&Math.random()<(c-0.6)*(perfect?0.5:1.2)*(fade?0.4:1);
   const dd=g.d;
-  P.pending={p,mode,perfect:ae<=g.w/2,three:mode==='jump'&&(dd>THREE_R||Math.abs(P.x-250)>220),d:dd};
+  P.pending={p,mode,perfect,fade,block,d:dd};
   P.fx=(RIM.x-P.x)/Math.max(1,dd);P.fy=(RIM.y-P.y)/Math.max(1,dd);
-  P.st=0;P.D={x0:P.x,y0:P.y,done:false,ok:Math.random()<p};
+  P.st=0;
+  P.D={x0:P.x,y0:P.y,done:false,ok:Math.random()<p,fade,ax:(P.x-RIM.x)/Math.max(1,dd),ay:(P.y-RIM.y)/Math.max(1,dd)};
   P.state=mode==='dunk'?'dunk':(mode==='layup'?'layup':'shoot');
   say(label,col);
 }
-function launchShot(z0,dur,peak,pts,p,three){
+function launchShot(z0,dur,peak,pts,p){
+  if(P.pending&&P.pending.block){
+    B.mode='loose';B.x=P.x;B.y=P.y-6;B.z=P.z+56;
+    const a=Math.atan2(P.y-Df.y,P.x-Df.x);
+    B.vx=Math.cos(a)*160+(Math.random()-.5)*60;B.vy=Math.sin(a)*160;B.vz=80;B.lock=0.6;
+    S.att++;S.streak=0;say('被蓋火鍋!','#f44');
+    Df.state='jump';Df.st=0;Df.bite=false;
+    return;
+  }
   shot={sx:P.x,sy:P.y,z0,t:0,dur,peak,made:Math.random()<p,pts};
   shot.perfect=!!(P.pending&&P.pending.perfect);
   B.mode='shot';S.att++;
@@ -222,6 +282,54 @@ function drawBanner(){
   ctx.globalAlpha=1;
 }
 
+// ---------- 防守 AI ----------
+function updateDef(dt){
+  if(!defOn)return;
+  const D=Df;
+  if(D.stun>0)D.stun-=dt;
+  if(D.cool>0)D.cool-=dt;
+  if(D.state==='jump'){
+    D.st+=dt;D.z=Math.sin(Math.min(1,D.st/0.55)*Math.PI)*24;
+    D.vx*=0.9;D.vy*=0.9;
+    D.x=clamp(D.x+D.vx*dt,12,W-12);D.y=clamp(D.y+D.vy*dt,12,H-6);
+    if(D.st>=0.55){D.state='guard';D.z=0;D.stun=D.bite?0.9:0.15;D.bite=false}
+    return;
+  }
+  const dx=RIM.x-P.x,dy=RIM.y-P.y,dd=Math.hypot(dx,dy)||1;
+  const gap=P.state==='aim'?24:36;
+  const tx=P.x+dx/dd*gap,ty=P.y+dy/dd*gap;
+  const ex=tx-D.x,ey=ty-D.y,ed=Math.hypot(ex,ey);
+  const sp=(P.state==='free'?125:110)*(D.stun>0?0.25:1);
+  const v=Math.min(sp,ed*6);
+  const ux=ed>0.5?ex/ed:0,uy=ed>0.5?ey/ed:0;
+  D.vx+=(ux*v-D.vx)*Math.min(1,dt*8);D.vy+=(uy*v-D.vy)*Math.min(1,dt*8);
+  D.x=clamp(D.x+D.vx*dt,12,W-12);D.y=clamp(D.y+D.vy*dt,12,H-6);
+
+  const pd=dist(P.x,P.y,D.x,D.y);
+  if(pd<18&&pd>0.1&&P.state!=='dunk'&&P.state!=='layup'){
+    const push=(18-pd)*0.5,nx=(D.x-P.x)/pd,ny=(D.y-P.y)/pd;
+    D.x+=nx*push;D.y+=ny*push;
+    P.x=clamp(P.x-nx*push,12,W-12);P.y=clamp(P.y-ny*push,12,H-6);
+  }
+  if(P.state==='aim'){
+    if(!D.react&&meter>D.rt&&pd<85&&D.stun<=0){
+      D.react=true;
+      if(Math.random()<0.75){D.state='jump';D.st=0;D.bite=false}
+    }
+  }else D.react=false;
+
+  if(P.state==='free'&&B.mode==='held'&&pd<30&&D.stun<=0&&D.cool<=0&&P.imm<=0){
+    D.steal+=dt;
+    if(D.steal>=0.6){
+      D.steal=0;D.cool=1.5;
+      if(Math.random()<0.4){
+        B.mode='loose';B.vx=(Math.random()-.5)*220;B.vy=(Math.random()-.5)*220;B.vz=140;B.lock=0.6;
+        S.streak=0;say('被抄截!','#f66');
+      }
+    }
+  }else D.steal=Math.max(0,D.steal-dt);
+}
+
 // ---------- 更新 ----------
 function update(dt){
   time+=dt;
@@ -231,27 +339,41 @@ function update(dt){
   if(k.KeyW||k.ArrowUp)ay-=1;if(k.KeyS||k.ArrowDown)ay+=1;
   let m=Math.hypot(ax,ay);if(m>1){ax/=m;ay/=m;m=1}
   const sprint=(input.sprint||k.KeyL)&&P.stamina>0.02&&m>0.2;
+  P.fakeCd=Math.max(0,P.fakeCd-dt);P.imm=Math.max(0,P.imm-dt);
 
-  if(P.state==='free'||P.state==='aim'){
+  if(P.state==='free'||P.state==='aim'||P.state==='fake'){
     let sp=sprint?230:150;
     if(P.cross>0){sp*=1.25;P.cross-=dt}
     if(P.state==='aim')sp*=0.15;
+    if(P.state==='fake')sp*=0.35;
     P.vx+=(ax*sp-P.vx)*Math.min(1,dt*10);P.vy+=(ay*sp-P.vy)*Math.min(1,dt*10);
     if(m>0.15&&P.state==='free'){P.fx=ax/m;P.fy=ay/m}
     P.x=clamp(P.x+P.vx*dt,12,W-12);P.y=clamp(P.y+P.vy*dt,12,H-6);
     P.stamina=clamp(P.stamina+(sprint?-0.45:0.25)*dt,0,1);
   }
+  if(P.state==='fake'){
+    P.st+=dt;P.z=Math.sin(Math.min(1,P.st/0.35)*Math.PI)*6;
+    if(P.st>=0.35){P.state='free';P.z=0}
+  }
   if(P.state==='aim'){
     meter+=dt/0.9;
+    if(P.mode==='jump'){
+      const dd=dist(P.x,P.y,RIM.x,RIM.y)||1;
+      const ux=(P.x-RIM.x)/dd,uy=(P.y-RIM.y)/dd;
+      P.fade=m>0.5&&(ax*ux+ay*uy)/m>0.6&&dd>70;
+    }
     if(meter>=1){meter=1;releaseShot()}
   }
   if(P.state==='shoot'){
-    P.st+=dt;
-    P.z=Math.sin(Math.min(1,P.st/0.6)*Math.PI)*22;
+    P.st+=dt;const D=P.D;
+    P.z=Math.sin(Math.min(1,P.st/0.6)*Math.PI)*(D.fade?26:22);
+    if(D.fade&&P.st<0.5){
+      P.x=clamp(P.x+D.ax*75*dt,12,W-12);P.y=clamp(P.y+D.ay*75*dt,12,H-6);
+    }
     if(P.st>=0.25&&B.mode==='held'){
-      const q=P.pending;
-      launchShot(P.z+56,0.7+q.d/900,45+q.d*0.25,q.three?3:2,q.p,q.three);
-      if(q.three)shot.pts=3;
+      const q=P.pending,dL=dist(P.x,P.y,RIM.x,RIM.y);
+      const three=dL>THREE_R||Math.abs(P.x-250)>220;
+      launchShot(P.z+(q.fade?60:56),0.7+dL/900,45+dL*0.25,three?3:2,q.p);
     }
     if(P.st>=0.6){P.state='free';P.z=0;P.vx=P.vy=0}
   }
@@ -260,7 +382,7 @@ function update(dt){
     const tx=RIM.x+(D.x0<250?-14:14),ty=RIM.y+34;
     P.x=D.x0+(tx-D.x0)*k2;P.y=D.y0+(ty-D.y0)*k2;
     P.z=Math.sin(Math.min(1,t/0.7)*Math.PI)*34;
-    if(t>=0.3&&B.mode==='held')launchShot(P.z+56,0.5,16,2,P.pending.p,false);
+    if(t>=0.3&&B.mode==='held')launchShot(P.z+56,0.5,16,2,P.pending.p);
     if(t>=0.7){P.state='free';P.z=0;P.D=null;P.vx=P.vy=0}
   }
   if(P.state==='dunk'){
@@ -280,11 +402,14 @@ function update(dt){
     if(t>=0.95){P.state='free';P.z=0;P.D=null;P.vx=P.vy=0}
   }
 
+  updateDef(dt);
+
   // 球
   if(B.mode==='held'){
     const bounce=Math.abs(Math.sin(time*(8+Math.hypot(P.vx,P.vy)/25)));
     if(P.state==='free'){B.x=P.x+P.hand*12;B.y=P.y+3;B.z=6+bounce*20}
     else if(P.state==='aim'||P.state==='shoot'){B.x=P.x;B.y=P.y-3;B.z=P.z+54}
+    else if(P.state==='fake'){B.x=P.x;B.y=P.y-3;B.z=P.z+36+18*Math.sin(Math.min(1,P.st/0.35)*Math.PI)}
     else if(P.state==='layup'){B.x=P.x+8;B.y=P.y-3;B.z=P.z+56}
     else if(P.state==='dunk'){B.x=P.x;B.y=P.y-4;B.z=P.z+60}
   }else if(B.mode==='shot'){
@@ -312,12 +437,13 @@ function update(dt){
       pass=null;
     }
   }else if(B.mode==='loose'){
+    if(B.lock>0)B.lock-=dt;
     B.x+=B.vx*dt;B.y+=B.vy*dt;B.z+=B.vz*dt;B.vz-=G*dt;
     if(B.z<=0){B.z=0;B.vz=-B.vz*0.55;if(Math.abs(B.vz)<45)B.vz=0;B.vx*=0.9;B.vy*=0.9}
     if(B.z===0){const f=Math.max(0,1-1.2*dt);B.vx*=f;B.vy*=f}
     if(B.x<5||B.x>W-5){B.vx*=-0.7;B.x=clamp(B.x,5,W-5)}
     if(B.y<5||B.y>H-5){B.vy*=-0.7;B.y=clamp(B.y,5,H-5)}
-    if(P.state==='free'&&B.z<26&&dist(P.x,P.y,B.x,B.y)<24){B.mode='held';say('撿到球','#ddd')}
+    if(P.state==='free'&&B.lock<=0&&B.z<26&&dist(P.x,P.y,B.x,B.y)<24){B.mode='held';say('撿到球','#ddd')}
   }
   if(netShake>0)netShake-=dt;
   texts.forEach(t=>{t.life-=dt;t.z+=30*dt});texts=texts.filter(t=>t.life>0);
@@ -328,7 +454,7 @@ function update(dt){
 let lastLabel='';
 function updateShootLabel(){
   let name='投籃';
-  if(P.state==='aim'||P.state==='shoot'||P.state==='layup'||P.state==='dunk')name=MODE_NAME[P.mode];
+  if(P.state==='aim'||P.state==='shoot'||P.state==='layup'||P.state==='dunk')name=modeLabel();
   else if(B.mode==='held')name=MODE_NAME[modeByDist(dist(P.x,P.y,RIM.x,RIM.y))];
   if(name!==lastLabel){lastLabel=name;document.getElementById('bShoot').innerHTML=name+'<br>(按住)'}
 }
@@ -411,39 +537,48 @@ function drawHoopFront(){
   }
   ringArc(0,Math.PI);
 }
+let SKIN='#f1c9a0';
 function arm(x1,y1,x2,y2,s){
-  ctx.strokeStyle='#f1c9a0';ctx.lineWidth=4*s;ctx.lineCap='round';
+  ctx.strokeStyle=SKIN;ctx.lineWidth=4*s;ctx.lineCap='round';
   ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
 }
-function drawPlayer(){
-  const g=pr(P.x,P.y,0),b=pr(P.x,P.y,P.z),s=b.s,X=b.x,Y=b.y;
+function drawPerson(o,def){
+  SKIN=def?'#c68b5c':'#f1c9a0';
+  const g=pr(o.x,o.y,0),b=pr(o.x,o.y,o.z),s=b.s,X=b.x,Y=b.y;
   ctx.fillStyle='rgba(0,0,0,.32)';ctx.beginPath();
-  ctx.ellipse(g.x,g.y,14*s*(1-P.z/220),5.5*s,0,0,Math.PI*2);ctx.fill();
-  const run=Math.min(1,Math.hypot(P.vx,P.vy)/150),sw=Math.sin(time*14)*run;
-  ctx.lineCap='round';ctx.strokeStyle='#f1c9a0';ctx.lineWidth=5*s;
+  ctx.ellipse(g.x,g.y,14*s*(1-o.z/220),5.5*s,0,0,Math.PI*2);ctx.fill();
+  const run=Math.min(1,Math.hypot(o.vx,o.vy)/150),sw=Math.sin(time*14+(def?1.5:0))*run;
+  ctx.lineCap='round';ctx.strokeStyle=SKIN;ctx.lineWidth=5*s;
   [[-1,sw],[1,-sw]].forEach(([d,w])=>{
-    const fy=Y-Math.max(0,w)*4*s-(P.z>0?4*s:0);
+    const fy=Y-Math.max(0,w)*4*s-(o.z>0?4*s:0);
     ctx.beginPath();ctx.moveTo(X+d*4*s,Y-17*s);ctx.lineTo(X+d*5*s,fy);ctx.stroke();
     ctx.fillStyle='#fff';ctx.beginPath();ctx.ellipse(X+d*5*s,fy,4.5*s,2.5*s,0,0,7);ctx.fill();
   });
-  ctx.fillStyle='#222';ctx.fillRect(X-10*s,Y-25*s,20*s,9*s);
-  ctx.fillStyle='#d8362b';rr(X-10*s,Y-39*s,20*s,17*s,4*s);ctx.fill();
-  ctx.fillStyle='#fff';ctx.font=`bold ${10*s}px sans-serif`;ctx.textAlign='center';ctx.fillText('23',X,Y-27*s);
+  ctx.fillStyle=def?'#112':'#222';ctx.fillRect(X-10*s,Y-25*s,20*s,9*s);
+  ctx.fillStyle=def?'#2a5bd7':'#d8362b';rr(X-10*s,Y-39*s,20*s,17*s,4*s);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font=`bold ${10*s}px sans-serif`;ctx.textAlign='center';ctx.fillText(def?'5':'23',X,Y-27*s);
   const sh=dx=>[X+dx*s,Y-36*s];
-  const held=B.mode==='held',st=P.state;
-  if(held&&(st==='aim'||st==='shoot'||st==='dunk'||st==='layup')){
-    const bp=pr(B.x,B.y,B.z);
-    arm(...sh(-9),bp.x-4*s,bp.y,s);arm(...sh(9),bp.x+4*s,bp.y,s);
-  }else if(st==='shoot'||st==='dunk'||st==='layup'){
-    arm(...sh(-9),X-5*s,Y-68*s,s);arm(...sh(9),X+5*s,Y-70*s,s);
-  }else if(st==='free'&&held){
-    const bp=pr(B.x,B.y,B.z);
-    arm(...sh(P.hand*9),bp.x,bp.y,s);
-    arm(...sh(-P.hand*9),X-P.hand*12*s,Y-22*s,s);
+  if(def){
+    const near=dist(o.x,o.y,P.x,P.y)<95;
+    if(o.state==='jump'){arm(...sh(-9),X-6*s,Y-72*s,s);arm(...sh(9),X+6*s,Y-72*s,s)}
+    else if(near){arm(...sh(-9),X-17*s,Y-54*s,s);arm(...sh(9),X+17*s,Y-54*s,s)}
+    else{arm(...sh(-9),X-12*s,Y-22*s+sw*4*s,s);arm(...sh(9),X+12*s,Y-22*s-sw*4*s,s)}
   }else{
-    arm(...sh(-9),X-12*s,Y-22*s+sw*4*s,s);arm(...sh(9),X+12*s,Y-22*s-sw*4*s,s);
+    const held=B.mode==='held',st=P.state;
+    if(held&&(st==='aim'||st==='shoot'||st==='fake'||st==='dunk'||st==='layup')){
+      const bp=pr(B.x,B.y,B.z);
+      arm(...sh(-9),bp.x-4*s,bp.y,s);arm(...sh(9),bp.x+4*s,bp.y,s);
+    }else if(st==='shoot'||st==='dunk'||st==='layup'){
+      arm(...sh(-9),X-5*s,Y-68*s,s);arm(...sh(9),X+5*s,Y-70*s,s);
+    }else if(st==='free'&&held){
+      const bp=pr(B.x,B.y,B.z);
+      arm(...sh(P.hand*9),bp.x,bp.y,s);
+      arm(...sh(-P.hand*9),X-P.hand*12*s,Y-22*s,s);
+    }else{
+      arm(...sh(-9),X-12*s,Y-22*s+sw*4*s,s);arm(...sh(9),X+12*s,Y-22*s-sw*4*s,s);
+    }
   }
-  ctx.fillStyle='#f1c9a0';ctx.beginPath();ctx.arc(X,Y-46*s,6.5*s,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=SKIN;ctx.beginPath();ctx.arc(X,Y-46*s,6.5*s,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#222';ctx.beginPath();ctx.arc(X,Y-46*s,6.5*s,Math.PI,Math.PI*2);ctx.fill();
 }
 function drawBall(){
@@ -464,7 +599,7 @@ function drawMeter(){
   ctx.fillStyle='#2e2';ctx.fillRect(bx,by+bh*(1-(g.c+g.w/2)),bw,bh*g.w);
   ctx.fillStyle='#fc3';ctx.fillRect(bx,by+bh*(1-meter),bw,bh*meter);
   ctx.fillStyle='#fff';ctx.fillRect(bx-3,by+bh*(1-meter)-1,bw+6,3);
-  ctx.font='bold 12px sans-serif';ctx.textAlign='center';ctx.fillText(MODE_NAME[P.mode],bx+bw/2,by-6);
+  ctx.font='bold 12px sans-serif';ctx.textAlign='center';ctx.fillText(modeLabel(),bx+bw/2,by-6);
 }
 function drawHUD(){
   ctx.fillStyle='rgba(0,0,0,.7)';ctx.fillRect(0,0,W,40);
@@ -497,7 +632,11 @@ function draw(){
   ctx.save();
   if(shake>0)ctx.translate((Math.random()-.5)*shake*14,(Math.random()-.5)*shake*14);
   drawBackdrop();drawCourt();drawHoopBack();
-  const items=[{y:P.y,f:drawPlayer},{y:B.mode==='held'&&P.state==='free'?P.y+1:B.y,f:drawBall}];
+  const items=[
+    {y:P.y,f:()=>drawPerson(P,false)},
+    {y:B.mode==='held'&&P.state==='free'?P.y+1:B.y,f:drawBall}
+  ];
+  if(defOn)items.push({y:Df.y,f:()=>drawPerson(Df,true)});
   items.sort((a,b)=>a.y-b.y).forEach(i=>i.f());
   drawHoopFront();drawFx();drawMeter();drawTexts();
   ctx.restore();
