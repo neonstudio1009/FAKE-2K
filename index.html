@@ -23,6 +23,19 @@
   .tbtn{position:fixed;right:8px;padding:6px 10px;background:rgba(0,0,0,.5);color:#fff;border:1px solid #888;border-radius:8px;font-size:13px}
   #bReset{top:8px}
   #bDef{top:44px}
+   #help{position:fixed;left:8px;top:48px;width:min(300px,88vw);background:rgba(10,12,20,.9);color:#fff;
+        border:1px solid #ffd84a;border-radius:10px;font-size:12px;line-height:1.5;z-index:10}
+  #helpHead{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:pointer;font-weight:bold;color:#ffd84a;font-size:13px}
+  #helpBody{padding:0 10px 10px;max-height:50vh;overflow-y:auto;touch-action:pan-y}
+  #help.min #helpBody{display:none}
+  #help.min{width:auto}
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+  .tab{padding:3px 8px;border:1px solid #666;border-radius:6px;background:#222;cursor:pointer}
+  .tab.act{background:#ffd84a;color:#000;border-color:#ffd84a;font-weight:bold}
+  #help table{width:100%;border-collapse:collapse;margin-top:4px}
+  #help th,#help td{border:1px solid #444;padding:3px 5px;text-align:left;vertical-align:top}
+  #help th{background:#2a2f45;color:#ffd84a}
+  #help p{margin:4px 0}
 </style>
 </head>
 <body>
@@ -37,7 +50,13 @@
 </div>
 <div class="tbtn" id="bReset">重置</div>
 <div class="tbtn" id="bDef">防守:開</div>
-
+<div id="help">
+  <div id="helpHead"><span>📖 玩法說明</span><span id="helpArrow">▼ 收起</span></div>
+  <div id="helpBody">
+    <div class="tabs" id="helpTabs"></div>
+    <div id="helpContent"></div>
+  </div>
+</div>
 <script>
 const cv=document.getElementById('game'),ctx=cv.getContext('2d');
 const W=500,H=470;
@@ -734,6 +753,65 @@ function loop(n){
   update(dt);draw();requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+// ---------- 玩法說明小視窗 ----------
+(function(){
+  const help=document.getElementById('help'),head=document.getElementById('helpHead');
+  const arrow=document.getElementById('helpArrow'),tabsEl=document.getElementById('helpTabs'),content=document.getElementById('helpContent');
+  const tbl=(rows)=>'<table><tr><th>搖桿方向</th><th>動作</th><th>特色</th></tr>'+
+    rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('')+'</table>';
+  const TABS=[
+    {id:'basic',name:'基本',html:
+      '<p>籃框在畫面上方,所以「朝籃框」是搖桿往上推,「遠離」是往下拉。</p>'+
+      '<p><b>移動:</b>左下搖桿(電腦 WASD / 方向鍵)</p>'+
+      '<p><b>投籃鍵:</b>按住出手,抓綠色區間放開。離籃框越近,會自動變成上籃或灌籃。</p>'+
+      '<p><b>加速:</b>按住跑更快,會消耗體力(電腦 L)</p>'+
+      '<p><b>換手運球:</b>換手並短暫加速(電腦空白鍵)</p>'+
+      '<p><b>要球:</b>球在地上時,按一下球會飛回手上(電腦 E)</p>'+
+      '<p><b>假動作:</b>按紫色鈕,或快速點一下投籃鍵(電腦 F)</p>'+
+      '<p>按住投籃鍵的同時<b>拖曳搖桿</b>,就能做出不同動作。</p>'},
+    {id:'jump',name:'跳投',html:'<p>離籃框遠時使用。</p>'+tbl([
+      ['不推','投籃','標準跳投'],
+      ['往下拉(遠離)','後仰','往後飄,不易被干擾和蓋火鍋'],
+      ['斜後方','後撤步','拉開空間,有機會晃開防守'],
+      ['左右橫向','側移跳投','往旁邊移動後出手'],
+      ['往上推(朝籃框)','轉身投籃','轉一圈再出手,綠區最窄']])},
+    {id:'layup',name:'上籃',html:'<p>離籃框中等距離時使用。</p>'+tbl([
+      ['不推或朝籃框','上籃','標準上籃'],
+      ['斜向','反手上籃','從籃框另一側出手,有機會晃開防守'],
+      ['橫向','歐洲步','先橫移一步再上籃,有機會晃開防守'],
+      ['遠離','拋投','高弧線,幾乎不會被蓋火鍋']])},
+    {id:'dunk',name:'灌籃',html:'<p>離籃框很近時使用。</p>'+tbl([
+      ['不推','單手灌籃','標準灌籃'],
+      ['朝籃框','雙手灌籃','畫面震動更大'],
+      ['橫向','風車灌籃','球會繞著身體轉一圈'],
+      ['遠離','360 灌籃','人會轉一圈,綠區最窄,震動最大']])+
+      '<p>越花俏的動作,綠區越窄,命中率也略低。</p>'},
+    {id:'def',name:'防守',html:
+      '<p><b>防守者(藍色 5 號):</b>會貼著你防守,你出手時會跳起來干擾,也會嘗試抄球。</p>'+
+      '<p><b>被干擾:</b>防守者離你越近、擋在你和籃框之間,命中率越低,還可能被蓋火鍋。</p>'+
+      '<p><b>假動作:</b>防守者可能被騙跳起來,落地後會站不穩,這時出手最安全。</p>'+
+      '<p><b>換手運球:</b>換手後短時間內不會被抄球。</p>'+
+      '<p>右上角「防守:開/關」可切換自由練習。</p>'}
+  ];
+  let cur='basic';
+  function render(){
+    tabsEl.innerHTML=TABS.map(t=>`<div class="tab${t.id===cur?' act':''}" data-id="${t.id}">${t.name}</div>`).join('');
+    content.innerHTML=TABS.find(t=>t.id===cur).html;
+  }
+  tabsEl.addEventListener('click',e=>{
+    const id=e.target.getAttribute('data-id');
+    if(id){cur=id;render()}
+  });
+  function setMin(min){
+    help.classList.toggle('min',min);
+    arrow.textContent=min?'▶ 展開':'▼ 收起';
+    try{localStorage.setItem('helpMin',min?'1':'0')}catch(e){}
+  }
+  head.addEventListener('click',()=>setMin(!help.classList.contains('min')));
+  let saved=null;try{saved=localStorage.getItem('helpMin')}catch(e){}
+  render();
+  setMin(saved==='1');
+})();
 </script>
 </body>
 </html>
