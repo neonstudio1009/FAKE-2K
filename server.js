@@ -1,19 +1,25 @@
-const express = require('express');
 const http = require('http');
-const path = require('path');
 const { WebSocketServer } = require('ws');
 
-const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/health', (req, res) => res.send('ok'));
+// 只允許你的 GitHub Pages 連線。多個網址用逗號分開,沒設定就不限制。
+const ALLOWED = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
+const server = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.end('ok');
+});
+
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  maxPayload: 16 * 1024,
+  verifyClient: (info) => ALLOWED.length === 0 || ALLOWED.includes(info.origin),
+});
+
 const rooms = new Map();
+const sendJson = (ws, o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
-function sendJson(ws, o) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(o));
-}
 function leave(ws) {
   const r = ws.room;
   if (!r) return;
@@ -34,7 +40,6 @@ wss.on('connection', (ws) => {
     let m;
     try { m = JSON.parse(text); } catch (e) { return; }
     if (!m || typeof m !== 'object') return;
-
     if (m.t === 'ping') return;
 
     if (m.t === 'create') {
@@ -61,7 +66,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // 其他訊息:原封不動轉給對手
     const r = ws.room;
     if (!r) return;
     const other = r.host === ws ? r.guest : r.host;
